@@ -3,7 +3,9 @@ import uuid
 import chromadb
 from chromadb.config import Settings
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
+# Reuse the shared embedding model.
+from embedding_model import embed_model
+
 
 
 # --------------------------------------------------
@@ -25,9 +27,6 @@ collection = client.get_or_create_collection(
 # EMBEDDING MODEL
 # --------------------------------------------------
 
-embed_model = SentenceTransformer(
-    "all-mpnet-base-v2"
-)
 
 
 # --------------------------------------------------

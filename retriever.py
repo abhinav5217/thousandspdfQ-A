@@ -1,6 +1,8 @@
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer
+# Reuse the same embedding model used by ingest.py.
+from embedding_model import embed_model
 
 
 # --------------------------------------------------
