@@ -1,60 +1,36 @@
-from sentence_transformers import CrossEncoder
+
+# Use lightweight keyword-based reranking instead of CrossEncoder.
+# This avoids loading another local AI model into RAM.
+
+import re
 
 
-# --------------------------------------------------
-# CROSS ENCODER
-# --------------------------------------------------
-
-model = CrossEncoder(
-    "cross-encoder/ms-marco-MiniLM-L-6-v2"
-)
+def tokenize(text):
+    """Convert text to lowercase words."""
+    return set(re.findall(r"\b\w+\b", text.lower()))
 
 
-# --------------------------------------------------
-# RERANK
-# --------------------------------------------------
-
-def rerank(
-    query,
-    docs,
-    top_k=5
-):
+def rerank(query, docs, top_k=5):
+    """Rank documents by keyword overlap with the question."""
 
     if not docs:
-
         return []
 
+    query_words = tokenize(query)
 
-    # Create query-document pairs
-    pairs = [
-        (query, doc)
-        for doc in docs
-    ]
+    # Score each document based on matching question words.
+    ranked = []
 
+    for doc in docs:
+        doc_words = tokenize(doc)
 
-    # Calculate relevance scores
-    scores = model.predict(
-        pairs
-    )
+        # Count query words that appear in the document.
+        score = len(query_words & doc_words)
 
+        ranked.append((doc, score))
 
-    # Combine documents + scores
-    ranked = sorted(
+    # Sort from highest score to lowest score.
+    ranked.sort(key=lambda item: item[1], reverse=True)
 
-        zip(
-            docs,
-            scores
-        ),
-
-        key=lambda x: x[1],
-
-        reverse=True
-    )
-
-
-    # Return top documents
-    return [
-        doc
-        for doc, score
-        in ranked[:top_k]
-    ]
+    # Return only the top-ranked documents.
+    return [doc for doc, score in ranked[:top_k]]
