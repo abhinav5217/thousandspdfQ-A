@@ -1,9 +1,10 @@
 
+
 from sentence_transformers import SentenceTransformer
 
-# Load the embedding model in one shared place.
-# Other modules can import this same model instance.
+# Use a smaller embedding model to reduce RAM usage.
 embed_model = SentenceTransformer(
-    "all-mpnet-base-v2",
+    "all-MiniLM-L6-v2",
     device="cpu"
 )
+
