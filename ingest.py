@@ -3,7 +3,7 @@ import uuid
 import chromadb
 from chromadb.config import Settings
 from pypdf import PdfReader
-from torch import chunk
+
 # Reuse the shared embedding model.
 from embedding_model import get_embedding
 
@@ -29,7 +29,7 @@ collection = client.get_or_create_collection(
 # --------------------------------------------------
 # Generate an embedding using the OpenAI API.
 # Generate an embedding using the OpenAI API.
-embedding = get_embedding(chunk)
+
 
 
 # --------------------------------------------------
@@ -109,9 +109,8 @@ def ingest_uploaded_pdf(
 
         for chunk_index, chunk in enumerate(chunks):
 
-            embedding = embed_model.encode(
-                chunk
-            ).tolist()
+            # Generate an embedding using the OpenAI API.
+            embedding = get_embedding(chunk)
 
             chunk_id = (
                 f"{filename}_"
