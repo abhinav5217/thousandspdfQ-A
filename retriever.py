@@ -1,66 +1,39 @@
 import chromadb
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
-# Reuse the same embedding model used by ingest.py.
-from embedding_model import embed_model
 
+# Import the same embedding function used by ingestion.
+from embedding_model import get_embedding
 
-# --------------------------------------------------
-# EMBEDDING MODEL
-# --------------------------------------------------
-
-embed_model = SentenceTransformer(
-    "all-mpnet-base-v2"
-)
-
-
-# --------------------------------------------------
-# CHROMA DB
-# --------------------------------------------------
-
+# Connect to ChromaDB.
 client = chromadb.Client(
     Settings(
         persist_directory="./chroma_db"
     )
 )
 
-
 collection = client.get_or_create_collection(
     name="rag_db"
 )
 
+def retrieve(query, top_k=10):
+    """Find relevant documents using OpenAI embeddings."""
 
-# --------------------------------------------------
-# RETRIEVE
-# --------------------------------------------------
+    # Generate the question embedding using the same model.
+    query_embedding = get_embedding(query)
 
-def retrieve(
-    query,
-    top_k=10
-):
+    # Avoid requesting more results than the collection contains.
+    total_documents = collection.count()
 
-    # Convert question into embedding
-    query_embedding = embed_model.encode(
-        query
-    ).tolist()
-
-
-    # Search ChromaDB
-    results = collection.query(
-
-        query_embeddings=[
-            query_embedding
-        ],
-
-        n_results=top_k
-    )
-
-
-    # No documents
-    if not results["documents"]:
-
+    if total_documents == 0:
         return []
 
+    results = collection.query(
+        query_embeddings=[query_embedding],
+        n_results=min(top_k, total_documents)
+    )
 
-    # Return document text
+    # Return the matching document text.
+    if not results["documents"]:
+        return []
+
     return results["documents"][0]
