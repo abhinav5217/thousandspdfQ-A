@@ -7,3 +7,5 @@ pypdf
 sentence-transformers
 openai
 python-dotenv
+
+requests

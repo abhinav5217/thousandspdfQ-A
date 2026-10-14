@@ -1,379 +1,202 @@
-import os
-import tempfile
-
+import requests
 import streamlit as st
 
-from ingest import ingest_uploaded_pdf
-from retriever import retrieve
-from reranker import rerank
-from llm import generate_answer
+# --------------------------------------------------
+# CONFIGURATION
+# --------------------------------------------------
 
+# URL of the deployed FastAPI backend.
+API_URL = "https://thousandspdfq-a.onrender.com"
 
-# ==================================================
-# PAGE CONFIG
-# ==================================================
-
+# Configure the Streamlit page.
 st.set_page_config(
     page_title="PDF AI Assistant",
+    page_icon="📚",
     layout="wide"
 )
 
+# --------------------------------------------------
+# SESSION STATE
+# --------------------------------------------------
 
-# ==================================================
+# Keep the conversation available during Streamlit reruns.
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Track uploaded files in the current session.
+if "processed_files" not in st.session_state:
+    st.session_state.processed_files = []
+
+
+# --------------------------------------------------
 # TITLE
-# ==================================================
+# --------------------------------------------------
 
 st.title("📚 PDF AI Assistant")
 
 st.write(
-    "Upload multiple PDFs and ask questions from them."
+    "Upload multiple PDFs and ask questions about their content."
 )
 
 
-# ==================================================
-# SESSION STATE
-# ==================================================
+# --------------------------------------------------
+# CHECK BACKEND
+# --------------------------------------------------
 
-if "messages" not in st.session_state:
+with st.sidebar:
+    st.subheader("Backend Status")
 
-    st.session_state.messages = []
+    if st.button("Check API Status"):
+        try:
+            # Send a request to the deployed health endpoint.
+            response = requests.get(
+                f"{API_URL}/health",
+                timeout=120
+            )
+
+            if response.ok:
+                st.success("API is online!")
+                st.json(response.json())
+            else:
+                st.error(f"API returned status {response.status_code}")
+
+        except requests.RequestException as error:
+            st.error(f"Could not connect to API: {error}")
 
 
-if "processed_files" not in st.session_state:
-
-    st.session_state.processed_files = []
-
-
-# ==================================================
-# MULTIPLE PDF UPLOAD
-# ==================================================
+# --------------------------------------------------
+# PDF UPLOAD
+# --------------------------------------------------
 
 st.subheader("📄 Upload PDFs")
 
-
 uploaded_files = st.file_uploader(
-
     "Choose PDF files",
-
     type=["pdf"],
-
     accept_multiple_files=True
 )
 
-
-# ==================================================
-# PROCESS PDFs
-# ==================================================
-
 if uploaded_files:
+    st.write(f"Selected PDFs: {len(uploaded_files)}")
 
-    st.write(
-        f"📚 {len(uploaded_files)} PDF(s) selected"
-    )
+    for uploaded_file in uploaded_files:
+        st.write(f"📄 {uploaded_file.name}")
 
-
-    # Show selected files
-
-    for file in uploaded_files:
-
-        st.write(
-            f"📄 {file.name}"
-        )
-
-
-    # Process button
-
-    if st.button("🚀 Process All PDFs"):
-
-        total_chunks = 0
-
-        progress_bar = st.progress(0)
-
-        status_text = st.empty()
-
-
-        for index, uploaded_file in enumerate(
-            uploaded_files
-        ):
-
-            temp_path = None
-
-            try:
-
-                status_text.write(
-                    f"Processing "
-                    f"{uploaded_file.name}..."
-                )
-
-
-                # --------------------------------------
-                # CREATE TEMP FILE
-                # --------------------------------------
-
-                with tempfile.NamedTemporaryFile(
-                    delete=False,
-                    suffix=".pdf"
-                ) as temp_file:
-
-                    temp_file.write(
-                        uploaded_file.getbuffer()
+    if st.button("🚀 Upload and Process PDFs"):
+        try:
+            # Prepare all selected PDFs for the FastAPI endpoint.
+            files = [
+                (
+                    "files",
+                    (
+                        uploaded_file.name,
+                        uploaded_file.getvalue(),
+                        "application/pdf"
                     )
+                )
+                for uploaded_file in uploaded_files
+            ]
 
-                    temp_path = temp_file.name
-
-
-                # --------------------------------------
-                # INGEST PDF
-                # --------------------------------------
-
-                chunks = ingest_uploaded_pdf(
-
-                    temp_path,
-
-                    uploaded_file.name
-
+            with st.spinner("Uploading PDFs to the backend..."):
+                # Send PDFs to the deployed backend.
+                response = requests.post(
+                    f"{API_URL}/upload-multiple",
+                    files=files,
+                    timeout=300
                 )
 
+            # Display backend errors if the upload failed.
+            if not response.ok:
+                st.error(f"Upload failed: {response.text}")
+            else:
+                result = response.json()
 
-                total_chunks += chunks
+                st.write("### Processing Results")
+                st.json(result)
 
+                # Record successfully processed files.
+                for item in result.get("files", []):
+                    if item.get("success"):
+                        filename = item["filename"]
 
-                # --------------------------------------
-                # SAVE PROCESSED FILE
-                # --------------------------------------
+                        if filename not in st.session_state.processed_files:
+                            st.session_state.processed_files.append(filename)
 
-                if (
-                    uploaded_file.name
-                    not in st.session_state.processed_files
-                ):
+                if result.get("total_chunks_added", 0) > 0:
+                    st.success("PDF processing completed!")
 
-                    st.session_state.processed_files.append(
-
-                        uploaded_file.name
-
-                    )
-
-
-                # --------------------------------------
-                # DELETE TEMP FILE
-                # --------------------------------------
-
-                if (
-                    temp_path
-                    and os.path.exists(temp_path)
-                ):
-
-                    os.remove(
-                        temp_path
-                    )
+        except requests.RequestException as error:
+            st.error(f"Could not upload PDFs: {error}")
 
 
-                # --------------------------------------
-                # UPDATE PROGRESS
-                # --------------------------------------
-
-                progress = (
-                    (index + 1)
-                    / len(uploaded_files)
-                )
-
-                progress_bar.progress(
-                    progress
-                )
-
-
-            except Exception as e:
-
-                st.error(
-                    f"❌ Error processing "
-                    f"{uploaded_file.name}: {e}"
-                )
-
-
-            finally:
-
-                if (
-                    temp_path
-                    and os.path.exists(temp_path)
-                ):
-
-                    os.remove(
-                        temp_path
-                    )
-
-
-        # ------------------------------------------
-        # COMPLETE
-        # ------------------------------------------
-
-        status_text.write(
-            "✅ All PDFs processed!"
-        )
-
-
-        st.success(
-
-            f"✅ {len(uploaded_files)} PDF(s) "
-            f"processed successfully.\n\n"
-
-            f"📦 Total chunks added: "
-            f"{total_chunks}"
-
-        )
-
-
-# ==================================================
-# PROCESSED PDFs
-# ==================================================
+# --------------------------------------------------
+# PROCESSED FILES
+# --------------------------------------------------
 
 if st.session_state.processed_files:
+    st.subheader("📚 Processed PDFs")
 
-    st.subheader(
-        "📚 Processed PDFs"
-    )
-
-
-    for file in st.session_state.processed_files:
-
-        st.write(
-            f"✅ {file}"
-        )
+    for filename in st.session_state.processed_files:
+        st.write(f"✅ {filename}")
 
 
-# ==================================================
-# CHAT HISTORY
-# ==================================================
+# --------------------------------------------------
+# DISPLAY CHAT HISTORY
+# --------------------------------------------------
 
-for msg in st.session_state.messages:
-
-    with st.chat_message(
-        msg["role"]
-    ):
-
-        st.write(
-            msg["content"]
-        )
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.write(message["content"])
 
 
-# ==================================================
-# QUESTION
-# ==================================================
+# --------------------------------------------------
+# ASK A QUESTION
+# --------------------------------------------------
 
-query = st.chat_input(
-    "Ask your question..."
-)
+question = st.chat_input("Ask a question about your PDFs...")
 
-
-# ==================================================
-# RAG PIPELINE
-# ==================================================
-
-if query:
-
-    # ----------------------------------------------
-    # USER MESSAGE
-    # ----------------------------------------------
-
-    st.session_state.messages.append(
-
-        {
-            "role": "user",
-            "content": query
-        }
-
-    )
-
+if question:
+    # Show and save the user's message.
+    st.session_state.messages.append({
+        "role": "user",
+        "content": question
+    })
 
     with st.chat_message("user"):
+        st.write(question)
 
-        st.write(query)
-
-
-    # ----------------------------------------------
-    # AI
-    # ----------------------------------------------
-
+    # Ask the deployed backend to retrieve documents and generate an answer.
     with st.chat_message("assistant"):
-
-        with st.spinner(
-            "Searching documents... 🤔"
-        ):
-
-            try:
-
-                # ==================================
-                # STEP 1 — RETRIEVAL
-                # ==================================
-
-                docs = retrieve(
-
-                    query,
-
-                    top_k=10
-
+        try:
+            with st.spinner("Searching documents and generating an answer..."):
+                response = requests.post(
+                    f"{API_URL}/ask",
+                    json={"question": question},
+                    timeout=180
                 )
 
-
-                # ==================================
-                # STEP 2 — RERANKING
-                # ==================================
-
-                top_docs = rerank(
-
-                    query,
-
-                    docs,
-
-                    top_k=5
-
-                )
-
-
-                # ==================================
-                # STEP 3 — CONTEXT
-                # ==================================
-
-                context = "\n\n".join(
-                    top_docs
-                )
-
-
-                # ==================================
-                # STEP 4 — LLM
-                # ==================================
-
-                answer = generate_answer(
-
-                    query,
-
-                    context
-
-                )
-
-
-                # ==================================
-                # SHOW ANSWER
-                # ==================================
+            if not response.ok:
+                st.error(f"Question failed: {response.text}")
+            else:
+                result = response.json()
+                answer = result.get("answer", "No answer was returned.")
 
                 st.write(answer)
 
+                # Save the answer in the chat history.
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": answer
+                })
 
-                # ==================================
-                # SAVE ANSWER
-                # ==================================
-
-                st.session_state.messages.append(
-
-                    {
-                        "role": "assistant",
-                        "content": answer
-                    }
-
-                )
+        except requests.RequestException as error:
+            st.error(f"Could not contact the backend: {error}")
 
 
-            except Exception as e:
+# --------------------------------------------------
+# CLEAR CHAT
+# --------------------------------------------------
 
-                st.error(
-                    f"❌ Error: {e}"
-                )
+if st.button("🗑️ Clear Chat"):
+    st.session_state.messages = []
+    st.rerun()
