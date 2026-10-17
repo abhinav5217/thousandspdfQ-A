@@ -1,60 +1,45 @@
 
 import re
 import chromadb
-from chromadb.config import Settings
 from rank_bm25 import BM25Okapi
-
-# Use the same embedding model as the ingestion pipeline.
 from embedding_model import get_embedding
 
+# Use the same database path as ingest.py.
+client = chromadb.PersistentClient(path="./chroma_db")
+collection = client.get_or_create_collection(name="rag_db")
 
-# --------------------------------------------------
-# CHROMA DB
-# --------------------------------------------------
-
-client = chromadb.Client(
-    Settings(
-        persist_directory="./chroma_db"
-    )
-)
-
-collection = client.get_or_create_collection(
-    name="rag_db"
-)
-
-
-# --------------------------------------------------
-# TEXT TOKENIZATION FOR BM25
-# --------------------------------------------------
 
 def tokenize(text):
-    """Convert text into lowercase word tokens."""
+    """Convert text to lowercase word tokens for BM25."""
     return re.findall(r"\b\w+\b", text.lower())
 
 
-# --------------------------------------------------
-# HYBRID RETRIEVAL
-# --------------------------------------------------
-
-def retrieve(query, top_k=10):
+def retrieve(query, top_k=10, session_id=None):
     """
-    Combine vector similarity search and BM25 keyword search.
-    Use Reciprocal Rank Fusion (RRF) to merge both rankings.
+    Hybrid retrieval using:
+    1. Vector Search
+    2. BM25 keyword search
+    3. Reciprocal Rank Fusion (RRF)
+
+    Both search methods are restricted to one session.
     """
 
-    # Get all indexed chunks from ChromaDB.
+    # Never perform an unfiltered search.
+    if not session_id:
+        return []
+
+    where_filter = {"session_id": session_id}
+
+    # Get only documents owned by this session.
     stored = collection.get(
-        include=["documents", "metadatas"]
+        where=where_filter,
+        include=["documents", "metadatas"],
     )
 
     ids = stored.get("ids") or []
     documents = stored.get("documents") or []
 
-    # Return an empty list when no chunks are indexed.
-    if not ids or not documents:
-        return []
-
-    # Keep only valid documents and their matching IDs.
+    # Ignore empty documents.
     pairs = [
         (doc_id, doc)
         for doc_id, doc in zip(ids, documents)
@@ -67,78 +52,58 @@ def retrieve(query, top_k=10):
     ids = [pair[0] for pair in pairs]
     documents = [pair[1] for pair in pairs]
 
-    # ------------------------------------------------
-    # STEP 1: VECTOR SEARCH
-    # ------------------------------------------------
-
-    query_embedding = get_embedding(query)
-
     candidate_k = min(top_k * 3, len(documents))
+
+    # STEP 1: Vector Search, filtered by session.
+    query_embedding = get_embedding(query)
 
     vector_results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=candidate_k
+        n_results=candidate_k,
+        where=where_filter,
     )
 
-    vector_ids = (
-        vector_results.get("ids") or [[]]
-    )[0]
+    vector_ids = (vector_results.get("ids") or [[]])[0]
 
-    # ------------------------------------------------
-    # STEP 2: BM25 KEYWORD SEARCH
-    # ------------------------------------------------
-
-    tokenized_corpus = [
-        tokenize(doc) for doc in documents
-    ]
-
-    # BM25 ranks chunks based on keyword relevance.
+    # STEP 2: BM25 keyword search on this session's documents only.
+    tokenized_corpus = [tokenize(doc) for doc in documents]
     bm25 = BM25Okapi(tokenized_corpus)
+
     query_tokens = tokenize(query)
     bm25_scores = bm25.get_scores(query_tokens)
 
-    # Sort chunks by BM25 score, highest first.
     bm25_indices = sorted(
         range(len(documents)),
         key=lambda i: bm25_scores[i],
-        reverse=True
+        reverse=True,
     )[:candidate_k]
 
-    bm25_ids = [
-        ids[i] for i in bm25_indices
-    ]
+    bm25_ids = [ids[i] for i in bm25_indices]
 
-    # ------------------------------------------------
-    # STEP 3: RECIPROCAL RANK FUSION (RRF)
-    # ------------------------------------------------
-
-    # RRF combines rankings without comparing raw scores.
+    # STEP 3: Combine rankings using Reciprocal Rank Fusion.
     rrf_scores = {}
-    id_to_document = dict(zip(ids, documents))
     rrf_constant = 60
 
-    # Add contributions from vector search.
     for rank, doc_id in enumerate(vector_ids, start=1):
         rrf_scores[doc_id] = (
             rrf_scores.get(doc_id, 0)
             + 1 / (rrf_constant + rank)
         )
 
-    # Add contributions from BM25 keyword search.
     for rank, doc_id in enumerate(bm25_ids, start=1):
         rrf_scores[doc_id] = (
             rrf_scores.get(doc_id, 0)
             + 1 / (rrf_constant + rank)
         )
 
-    # Sort combined results by their fused ranking.
+    # Return only the highest-ranked chunks.
+    id_to_document = dict(zip(ids, documents))
     ranked_ids = sorted(
         rrf_scores,
         key=rrf_scores.get,
-        reverse=True
+        reverse=True,
     )
 
-    # Return the top-ranked text chunks.
     return [
         id_to_document[doc_id]
         for doc_id in ranked_ids[:top_k]

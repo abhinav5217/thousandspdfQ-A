@@ -1,7 +1,8 @@
+
 import os
 import tempfile
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 
 from ingest import ingest_uploaded_pdf
@@ -9,367 +10,187 @@ from retriever import retrieve
 from reranker import rerank
 from llm import generate_answer
 
-
-# ============================================================
-# FASTAPI APP
-# ============================================================
-
 app = FastAPI(
     title="PDF AI Assistant API",
     description="RAG API for uploading PDFs and asking questions",
-    version="1.0.0"
+    version="1.1.0",
 )
 
 
-# ============================================================
-# REQUEST MODEL
-# ============================================================
-
 class QuestionRequest(BaseModel):
     question: str
+    session_id: str
 
-
-# ============================================================
-# HOME
-# ============================================================
 
 @app.get("/")
 def home():
-
     return {
         "message": "PDF AI Assistant API is running",
         "docs": "/docs",
-        "endpoints": [
-            "/upload",
-            "/upload-multiple",
-            "/ask",
-            "/health"
-        ]
+        "endpoints": ["/upload", "/upload-multiple", "/ask", "/health"],
     }
 
-
-# ============================================================
-# HEALTH CHECK
-# ============================================================
 
 @app.get("/health")
 def health():
+    return {"status": "ok", "message": "RAG API is running"}
 
-    return {
-        "status": "ok",
-        "message": "RAG API is running"
-    }
-
-
-# ============================================================
-# UPLOAD ONE PDF
-# ============================================================
 
 @app.post("/upload")
 async def upload_pdf(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    session_id: str = Form(...),
 ):
+    # Validate the file and session ID.
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed.")
 
-    # Check file type
-
-    if not file.filename.lower().endswith(".pdf"):
-
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are allowed."
-        )
-
+    if not session_id.strip():
+        raise HTTPException(status_code=400, detail="session_id is required.")
 
     temp_path = None
 
     try:
-
-        # Create temporary file
-
-        with tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".pdf"
-        ) as temp_file:
-
-            content = await file.read()
-
-            temp_file.write(content)
-
+        # Save the uploaded file temporarily.
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+            temp_file.write(await file.read())
             temp_path = temp_file.name
 
-
-        # Ingest PDF
-
+        # Store chunks with the session ID.
         total_chunks = ingest_uploaded_pdf(
             temp_path,
-            file.filename
+            file.filename,
+            session_id,
         )
-
 
         return {
             "success": True,
             "filename": file.filename,
             "chunks_added": total_chunks,
-            "message": "PDF processed successfully"
+            "message": "PDF processed successfully",
         }
 
-
     except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
+        raise HTTPException(status_code=500, detail=str(e))
 
     finally:
-
-        # Remove temporary file
-
-        if (
-            temp_path
-            and os.path.exists(temp_path)
-        ):
-
+        if temp_path and os.path.exists(temp_path):
             os.remove(temp_path)
 
 
-# ============================================================
-# UPLOAD MULTIPLE PDFs
-# ============================================================
-
 @app.post("/upload-multiple")
 async def upload_multiple_pdfs(
-    files: list[UploadFile] = File(...)
+    files: list[UploadFile] = File(...),
+    session_id: str = Form(...),
 ):
-
     if not files:
+        raise HTTPException(status_code=400, detail="No PDF files provided.")
 
-        raise HTTPException(
-            status_code=400,
-            detail="No PDF files provided."
-        )
-
+    if not session_id.strip():
+        raise HTTPException(status_code=400, detail="session_id is required.")
 
     results = []
-
     total_chunks = 0
 
-
     for file in files:
-
-        # Check extension
-
-        if not file.filename.lower().endswith(".pdf"):
-
+        if not file.filename or not file.filename.lower().endswith(".pdf"):
             results.append({
                 "filename": file.filename,
                 "success": False,
-                "error": "Only PDF files are allowed."
+                "error": "Only PDF files are allowed.",
             })
-
             continue
-
 
         temp_path = None
 
-
         try:
-
-            # Temporary file
-
-            with tempfile.NamedTemporaryFile(
-                delete=False,
-                suffix=".pdf"
-            ) as temp_file:
-
-                content = await file.read()
-
-                temp_file.write(content)
-
+            # Save this PDF temporarily.
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
+                temp_file.write(await file.read())
                 temp_path = temp_file.name
 
-
-            # Process PDF
-
+            # Index the PDF under the current session.
             chunks = ingest_uploaded_pdf(
                 temp_path,
-                file.filename
+                file.filename,
+                session_id,
             )
-
 
             total_chunks += chunks
 
-
             results.append({
-
                 "filename": file.filename,
-
                 "success": True,
-
-                "chunks_added": chunks
-
+                "chunks_added": chunks,
             })
-
 
         except Exception as e:
-
             results.append({
-
                 "filename": file.filename,
-
                 "success": False,
-
-                "error": str(e)
-
+                "error": str(e),
             })
 
-
         finally:
-
-            # Remove temporary file
-
-            if (
-                temp_path
-                and os.path.exists(temp_path)
-            ):
-
+            if temp_path and os.path.exists(temp_path):
                 os.remove(temp_path)
 
-
     return {
-
-        "success": True,
-
+        "success": all(item["success"] for item in results),
         "files_processed": len(results),
-
         "total_chunks_added": total_chunks,
-
-        "files": results
-
+        "files": results,
     }
 
 
-# ============================================================
-# ASK QUESTION
-# ============================================================
-
 @app.post("/ask")
-def ask_question(
-    request: QuestionRequest
-):
-
+def ask_question(request: QuestionRequest):
     question = request.question.strip()
-
-
-    # Check question
+    session_id = request.session_id.strip()
 
     if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-        raise HTTPException(
-
-            status_code=400,
-
-            detail="Question cannot be empty."
-
-        )
-
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required.")
 
     try:
-
-        # ----------------------------------------------------
-        # STEP 1: RETRIEVE
-        # ----------------------------------------------------
-
+        # Retrieve only chunks belonging to this session.
         docs = retrieve(
             question,
-            top_k=10
+            top_k=10,
+            session_id=session_id,
         )
 
-
-        # ----------------------------------------------------
-        # CHECK DOCUMENTS
-        # ----------------------------------------------------
-
+        # Do not ask the LLM to answer from unrelated documents.
         if not docs:
-
             return {
-
                 "success": True,
-
                 "question": question,
-
                 "answer": (
-                    "I could not find "
-                    "relevant information "
-                    "in the uploaded documents."
-                )
-
+                    "I could not find relevant information in the PDFs "
+                    "uploaded in this browser session."
+                ),
+                "documents_retrieved": 0,
+                "documents_used": 0,
             }
 
+        # Rerank the retrieved chunks.
+        top_docs = rerank(question, docs, top_k=5)
 
-        # ----------------------------------------------------
-        # STEP 2: RERANK
-        # ----------------------------------------------------
+        # Build context for the LLM.
+        context = "\n\n".join(top_docs)
 
-        top_docs = rerank(
-
-            question,
-
-            docs,
-
-            top_k=5
-
-        )
-
-
-        # ----------------------------------------------------
-        # STEP 3: CREATE CONTEXT
-        # ----------------------------------------------------
-
-        context = "\n\n".join(
-            top_docs
-        )
-
-
-        # ----------------------------------------------------
-        # STEP 4: LLM
-        # ----------------------------------------------------
-
-        answer = generate_answer(
-
-            question,
-
-            context
-
-        )
-
-
-        # ----------------------------------------------------
-        # RESPONSE
-        # ----------------------------------------------------
+        # Generate the answer from retrieved context.
+        answer = generate_answer(question, context)
 
         return {
-
             "success": True,
-
             "question": question,
-
             "answer": answer,
-
             "documents_retrieved": len(docs),
-
-            "documents_used": len(top_docs)
-
+            "documents_used": len(top_docs),
         }
 
-
     except Exception as e:
-
-        raise HTTPException(
-
-            status_code=500,
-
-            detail=str(e)
-
-        )
+        raise HTTPException(status_code=500, detail=str(e))

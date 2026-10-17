@@ -1,6 +1,6 @@
 import requests
 import streamlit as st
-
+import uuid
 # --------------------------------------------------
 # CONFIGURATION
 # --------------------------------------------------
@@ -13,6 +13,16 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+#Every browser session has a unique document workspace.
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
+
+# Preserve chat history between reruns.
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "processed_files" not in st.session_state:
+    st.session_state.processed_files = []
 
 # --------------------------------------------------
 # CUSTOM UI THEME
@@ -146,6 +156,7 @@ if uploaded_files:
                 response = requests.post(
                     f"{API_URL}/upload-multiple",
                     files=files,
+                    data={"session_id": st.session_state.session_id},
                     timeout=300,
                 )
 
@@ -218,7 +229,9 @@ if question:
             with st.spinner("Searching your documents and preparing an answer..."):
                 response = requests.post(
                     f"{API_URL}/ask",
-                    json={"question": question},
+                    json={"question": question,
+                          "session_id": st.session_state.session_id
+                          },
                     timeout=180,
                 )
 
